@@ -1,87 +1,70 @@
-//Es necesario utilizar "extern c" para incluir -h files ffmpeg:
-extern "C"
-{
-    #include <libavcodec/avcodec.h>
-    #include <libavformat/avformat.h>
-    #include <ffmpeg/swscale.h>
-}
+
+#include <iostream>
+
+#include "ffmpeg.h"
 
 using namespace std;
-
-// Register all components of FFmpeg
-av_register_all();
-
-// Open file
-if (av_open_input_file(&pFormatCtx, inputFile.c_str(), NULL, 0, NULL) != 0)
-{
-   CloseFile();
-   return false;
-}
-// Get infromation about streams
-if (avformat_find_stream_info(pFormatCtx, NULL) < 0)
-{
-   CloseFile();
-   return false;
-}
-
-// # video stream
-videoStreamIndex = -1;
-for (unsigned int i = 0; i < pFormatCtx->nb_streams; i++)
-{
-   if (pFormatCtx->streams[i]->codec->codec_type == CODEC_TYPE_VIDEO)
-   {
-     videoStreamIndex = i;
-     pVideoCodecCtx = pFormatCtx->streams[i]->codec;
-     // Find decoder
-     pVideoCodec = avcodec_find_decoder(pVideoCodecCtx->codec_id);
-     if (pVideoCodec)
-     {
-       // Open decoder
-       res = !(avcodec_open2(pVideoCodecCtx, pVideoCodec, NULL) < 0);
-       width = pVideoCodecCtx->coded_width;
-       height = pVideoCodecCtx->coded_height;
-     }
-     break;
-   }
-}
-
-// FPS
-videoFramePerSecond =
-av_q2d(pFormatCtx->streams[videoStreamIndex]->r_frame_rate);
-// Base time unit
-videoBaseTime =
-av_q2d(pFormatCtx->streams[videoStreamIndex]->time_base);
-// Duration of video clip
-videoDuration = (unsigned long)
-pFormatCtx->streams[videoStreamIndex]->duration * (videoFramePerSecond *
-videoBaseTime);
-// Frame width
-width = formatCtx->streams[videoStreamIndex]->codec->width;
-// Frame height
-height = formatCtx->streams[videoStreamIndex]->codec->height;
-
-while (av_read_frame(pFormatCtx, &packet) >= 0)
-
-if(packet.stream_index == videoStreamIndex)
-
-// Decode packeg to frame.
-AVFrame * pOutFrame;
-int videoFrameBytes = avcodec_decode_video2(pVideoCodecCtx, pOutFrame,
-&got_picture_ptr, avpkt);
-
-int packetDecodedSize = avcodec_decode_audio4(pAudioCodecCtx,
-audioFrame, &got_picture_ptr, avpkt);
-
-// close video codec
-avcodec_close(pVideoCodecCtx);
-// close audio codec
-avcodec_close(pAudioCodecCtx);
-// close file
-av_close_input_file(pFormatCtx);
+using namespace ffmpeg;
 
 
 int main()
 {
-    cout << "Hello world!" << endl;
-    return 0;
+	// This example will take a raw audio file and encode it into as MP3.
+	try
+	{
+		// Create a muxer that will output the video as MKV.
+		Muxer* muxer = new Muxer("output.mkv");
+
+		// Create a codec that will encode video as VP9
+		VP9Codec* videoCodec = new VP9Codec();
+
+		// Configure the codec to not do compression, to use multiple CPU's and to go as fast as possible.
+		videoCodec->SetLossless(true);
+		videoCodec->SetCpuUsed(5);
+		videoCodec->SetDeadline("realtime");
+
+		// Create a codec that will encode audio as AAC
+		AudioCodec* audioCodec = new AudioCodec(AV_CODEC_ID_AAC);
+
+		// Create encoders for both
+		VideoEncoder* videoEncoder = new VideoEncoder(videoCodec, muxer);
+		AudioEncoder* audioEncoder = new AudioEncoder(audioCodec, muxer);
+
+		// Load both audio and video from a container
+		Demuxer* videoContainer = new Demuxer("samples/big_buck_bunny.mp4");
+		Demuxer* audioContainer = new Demuxer("samples/DesiJourney.wav");
+
+		// Tie the best stream from each container to the output
+		videoContainer->DecodeBestVideoStream(videoEncoder);
+		audioContainer->DecodeBestAudioStream(audioEncoder);
+
+		// Prepare the pipeline. We want to call this before the rest of the loop
+		// to ensure that the muxer will be fully ready to receive data from
+		// multiple sources.
+		videoContainer->PreparePipeline();
+		audioContainer->PreparePipeline();
+
+		// Pump the audio and video fully through.
+		// To avoid big buffers, we interleave these calls so that the container
+		// can be written to disk efficiently.
+		while (!videoContainer->IsDone() || !audioContainer->IsDone())
+		{
+			if (!videoContainer->IsDone()) videoContainer->Step();
+			if (!audioContainer->IsDone()) audioContainer->Step();
+		}
+
+		// Save everything to disk by closing the muxer.
+		muxer->Close();
+	}
+	catch (FFmpegException e)
+	{
+		cerr << "Exception caught!" << endl;
+		cerr << e.what() << endl;
+		throw e;
+	}
+
+	cout << "Encoding complete!" << endl;
+	cout << "Press any key to continue..." << endl;
+
+	getchar();
 }
